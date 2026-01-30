@@ -11,34 +11,7 @@ import plotly.express as px
 # Vlož sem ten stejný odkaz na Google Sheet (musí končit na output=csv)
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRKIbg5LXy_GcU8iwXPxbskBL5dauZhrcmCqHJ8k9ijqi2p4rUyr8lHbEK5dZZMiRIEfvFnVyiw44r8/pub?output=csv"
 
-# ==========================================
-
-Jasně, rozumím. Chceš tam vidět kolonku, která ti jasně řekne: "Tohle jsou moje prachy, které v tom leží a které chci zpátky."
-
-Abychom to nekomplikovali přidáváním nových sloupců do Google Tabulky (kde už máme ten "Nakup"), využijeme toho, co tam je. Pokud jsi do sloupce Nakup dala tu svou "očištěnou cenu" (vklad minus výběry děleno počtem), tak výpočet Mnozstvi * Nakup je přesně ta částka, ve které "visíš".
-
-Upravil jsem Dashboard tak, aby:
-
-Sloupec Investice přejmenoval na "V tom visím".
-
-Přidal barvy pro Zisk v Kč (abys viděla, kolik jsi v plusu/mínusu v korunách, nejen v procentech).
-
-Tady je kód. Nahraď jím ten starý v dashboard.py.
-
-Python
-import streamlit as st
-import pandas as pd
-import requests
-import io
-import yfinance as yf
-import plotly.express as px
-
-# ==========================================
-# ⚙️ NASTAVENÍ
-# ==========================================
-SHEET_URL = "ZDE_VLOZ_ODKAZ_NA_GOOGLE_SHEET"
-# ==========================================
-
+# =========================================
 st.set_page_config(page_title="Moje Krypto Portfolio", page_icon="💰", layout="wide")
 
 def clean_number(value):
@@ -176,4 +149,5 @@ if df is not None and not df.empty:
     st.caption(f"Data: Yahoo Finance. Kurz USD: {kurz:.2f} Kč")
 else:
     st.warning("Žádná data. Zkontroluj tabulku.")
+
 
