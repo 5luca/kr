@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import io
+import yfinance as yf
 import plotly.express as px
 
 # ==========================================
@@ -12,132 +13,147 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRKIbg5LXy_GcU8iwXP
 
 # ==========================================
 
-st.set_page_config(page_title="Moje Krypto Portfolio", page_icon="💰", layout="centered")
+st.set_page_config(page_title="Moje Krypto Portfolio", page_icon="💰", layout="wide")
 
-# Funkce pro načtení dat
 def clean_number(value):
-    if pd.isna(value): return 0.0
+    if pd.isna(value) or str(value).strip() == '': return 0.0
     text = str(value).replace(' ', '').replace('\xa0', '').replace(',', '.')
     try: return float(text)
     except: return 0.0
 
-@st.cache_data(ttl=300) # Data se aktualizují každých 5 minut
+@st.cache_data(ttl=300) # Data se drží v paměti 5 minut
 def get_data():
     try:
-        # 1. Načíst Portfolio z Google Sheetu
+        # 1. Načíst Portfolio
         response = requests.get(SHEET_URL)
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text))
         
-        # Vyčistit data
-        df['Mnozstvi'] = df['Mnozstvi'].apply(clean_number)
-        df['Cena_Nakup'] = df['Cena_Nakup'].apply(clean_number)
+        # Očistit názvy sloupců
+        df.columns = [str(c).strip() for c in df.columns]
         
-        # 2. Získat aktuální ceny z CoinGecko
-        # Mapování symbolů
-        id_map = {
-            'BTC': 'bitcoin', 'ETH': 'ethereum', 'DOT': 'polkadot', 
-            'DOGE': 'dogecoin', 'LTC': 'litecoin', 'XTZ': 'tezos', 
-            'SOL': 'solana', 'UNI': 'uniswap', 'OMG': 'omg',
-            'MKR': 'maker', 'NMR': 'numeraire', 'TRUMP': 'official-trump'
-        }
+        # Načítáme nové sloupce
+        data_rows = []
+        for index, row in df.iterrows():
+            if pd.isna(row.get('Symbol')): continue
+            symbol = str(row['Symbol']).upper().strip()
+            
+            # Yahoo Symbol
+            y_sym = f"{symbol}-USD"
+            if symbol == 'DOT': y_sym = 'DOT-USD'
+            
+            data_rows.append({
+                'Symbol': symbol,
+                'Yahoo_Sym': y_sym,
+                'Mnozstvi': clean_number(row.get('Mnozstvi', 0)),
+                'Nakup_Cena': clean_number(row.get('Nakup', 0)),
+                'Cil_Prodej': clean_number(row.get('Prodej', 0)),
+                'Cil_Nakup': clean_number(row.get('Koupit', 0))
+            })
+            
+        df_clean = pd.DataFrame(data_rows)
         
-        ids = []
-        df['Coin_ID'] = df['Symbol'].str.upper().str.strip().map(id_map)
-        valid_coins = df.dropna(subset=['Coin_ID'])
-        ids_list = valid_coins['Coin_ID'].unique().tolist()
+        # 2. Stáhnout ceny (Yahoo Finance)
+        tickers = df_clean['Yahoo_Sym'].tolist()
+        tickers.append("CZK=X") # Kurz
         
-        if not ids_list: return None
+        market_data = yf.download(tickers, period="1d", progress=False)['Close']
         
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(ids_list)}&vs_currencies=czk"
-        price_response = requests.get(url, timeout=10)
-        prices = price_response.json()
-        
-        # 3. Spojit to dohromady
+        # Kurz USD/CZK
+        if 'CZK=X' in market_data:
+            usd_czk = float(market_data['CZK=X'].iloc[-1])
+        else:
+            usd_czk = 24.5 # Fallback
+            
+        # Přiřadit ceny
         def get_current_price(row):
-            coin_id = row['Coin_ID']
-            if coin_id in prices:
-                return prices[coin_id]['czk']
+            sym = row['Yahoo_Sym']
+            if sym in market_data.columns:
+                price_usd = float(market_data[sym].iloc[-1])
+                return price_usd * usd_czk
             return 0.0
 
-        df['Cena_Ted'] = df.apply(get_current_price, axis=1)
+        df_clean['Cena_Ted'] = df_clean.apply(get_current_price, axis=1)
         
         # Výpočty
-        df['Hodnota_Investice'] = df['Mnozstvi'] * df['Cena_Nakup']
-        df['Hodnota_Ted'] = df['Mnozstvi'] * df['Cena_Ted']
+        df_clean['Hodnota_Investice'] = df_clean['Mnozstvi'] * df_clean['Nakup_Cena']
+        df_clean['Hodnota_Ted'] = df_clean['Mnozstvi'] * df_clean['Cena_Ted']
+        df_clean['Zisk_KC'] = df_clean['Hodnota_Ted'] - df_clean['Hodnota_Investice']
         
-        # Ošetření nulové nákupky (DOGE/BTC)
-        df['Zisk_KC'] = df['Hodnota_Ted'] - df['Hodnota_Investice']
-        df['Zisk_PCT'] = df.apply(
-            lambda x: ((x['Cena_Ted'] - x['Cena_Nakup']) / x['Cena_Nakup'] * 100) if x['Cena_Nakup'] > 0 else 100, 
+        df_clean['Zisk_PCT'] = df_clean.apply(
+            lambda x: ((x['Cena_Ted'] - x['Nakup_Cena']) / x['Nakup_Cena'] * 100) if x['Nakup_Cena'] > 0 else 0, 
             axis=1
         )
         
-        return df
+        return df_clean, usd_czk
         
     except Exception as e:
-        st.error(f"Chyba: {e}")
-        return None
+        st.error(f"Chyba při načítání dat: {e}")
+        return None, 0
 
-# --- APLIKACE ---
-st.title("💰 Moje Krypto Nástěnka")
-st.caption("Data čerpám z tvé Google Tabulky")
+# --- VIZUÁL APLIKACE ---
+st.title("💰 Krypto Přehled")
 
-if st.button('🔄 Aktualizovat data'):
+if st.button('🔄 Aktualizovat teď'):
     st.cache_data.clear()
 
-df = get_data()
+df, kurz = get_data()
 
 if df is not None and not df.empty:
-    # 1. Hlavní metriky
-    total_value = df['Hodnota_Ted'].sum()
-    total_invested = df['Hodnota_Investice'].sum()
-    total_profit = total_value - total_invested
+    # 1. Horní statistiky
+    total_val = df['Hodnota_Ted'].sum()
+    total_inv = df['Hodnota_Investice'].sum()
+    total_profit = total_val - total_inv
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Celková hodnota", f"{total_value:,.0f} Kč")
-    col2.metric("Celkový zisk/ztráta", f"{total_profit:,.0f} Kč", delta_color="normal" if total_profit > 0 else "inverse")
-    
-    # Zobrazení jen pro info (Investováno)
-    # col3.metric("Původní investice", f"{total_invested:,.0f} Kč")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Celková hodnota", f"{total_val:,.0f} Kč")
+    c2.metric("Původní investice", f"{total_inv:,.0f} Kč")
+    c3.metric("Zisk / Ztráta", f"{total_profit:,.0f} Kč", 
+              delta=f"{(total_profit/total_inv*100):.1f} %" if total_inv > 0 else None)
 
-    st.divider()
+    st.markdown("---")
 
-    # 2. Grafy
-    st.subheader("📊 Rozložení portfolia")
+    # 2. Hlavní tabulka s barvami
+    st.subheader("📋 Detail mincí")
     
-    # Koláčový graf (Kde máš nejvíc peněz)
-    fig_pie = px.pie(df, values='Hodnota_Ted', names='Symbol', title='V čem máš uložené peníze')
-    st.plotly_chart(fig_pie, use_container_width=True)
+    # Úprava pro hezké zobrazení
+    display = df.copy()
+    display = display[['Symbol', 'Mnozstvi', 'Cena_Ted', 'Nakup_Cena', 'Zisk_PCT', 'Cil_Prodej', 'Cil_Nakup']]
     
-    st.subheader("🚀 Ziskovost mincí (%)")
-    # Barva sloupců podle toho, jestli jsou v plusu nebo mínusu
-    df['Barva'] = df['Zisk_PCT'].apply(lambda x: 'Zisk' if x > 0 else 'Ztráta')
-    
-    fig_bar = px.bar(
-        df.sort_values('Zisk_PCT', ascending=False), 
-        x='Symbol', 
-        y='Zisk_PCT',
-        color='Barva',
-        color_discrete_map={'Zisk': '#2ecc71', 'Ztráta': '#e74c3c'},
-        title='Které mince vydělávají nejvíc (%)'
+    # Zvýraznění (Pandas Styler)
+    def color_profit(val):
+        color = '#d4edda' if val > 0 else '#f8d7da' # Zelená / Červená
+        return f'background-color: {color}'
+
+    st.dataframe(
+        display.style.format({
+            'Mnozstvi': '{:.4f}',
+            'Cena_Ted': '{:,.0f} Kč',
+            'Nakup_Cena': '{:,.0f} Kč',
+            'Zisk_PCT': '{:+.1f} %',
+            'Cil_Prodej': '{:,.0f} Kč',
+            'Cil_Nakup': '{:,.0f} Kč'
+        }).applymap(color_profit, subset=['Zisk_PCT']),
+        use_container_width=True
     )
-    st.plotly_chart(fig_bar, use_container_width=True)
 
-    # 3. Detailní tabulka
-    st.subheader("📝 Detailní přehled")
+    # 3. Grafy
+    c_left, c_right = st.columns(2)
     
-    # Formátování tabulky pro hezké zobrazení
-    display_df = df[['Symbol', 'Mnozstvi', 'Cena_Nakup', 'Cena_Ted', 'Zisk_PCT', 'Hodnota_Ted']].copy()
-    display_df.columns = ['Mince', 'Množství', 'Nákupka (Kč)', 'Cena Teď (Kč)', 'Zisk %', 'Hodnota (Kč)']
-    
-    st.dataframe(display_df.style.format({
-        'Množství': '{:.4f}',
-        'Nákupka (Kč)': '{:.2f}',
-        'Cena Teď (Kč)': '{:.2f}',
-        'Zisk %': '{:+.1f} %',
-        'Hodnota (Kč)': '{:,.0f}'
-    }))
+    with c_left:
+        st.subheader("Kde máš nejvíc peněz?")
+        fig1 = px.pie(df, values='Hodnota_Ted', names='Symbol', hole=0.4)
+        st.plotly_chart(fig1, use_container_width=True)
+        
+    with c_right:
+        st.subheader("Kdo nejvíc vydělává (%)")
+        df['Barva'] = df['Zisk_PCT'].apply(lambda x: 'Zisk' if x>=0 else 'Ztráta')
+        fig2 = px.bar(df.sort_values('Zisk_PCT', ascending=False), 
+                      x='Symbol', y='Zisk_PCT', color='Barva',
+                      color_discrete_map={'Zisk': '#28a745', 'Ztráta': '#dc3545'})
+        st.plotly_chart(fig2, use_container_width=True)
+        
+    st.caption(f"Data stažena z Yahoo Finance. Kurz USD: {kurz:.2f} Kč")
 
 else:
-    st.warning("Zatím se nepodařilo načíst data. Zkontroluj odkaz na Google Sheet.")
+    st.warning("Nepodařilo se načíst data. Zkontroluj tabulku.")
