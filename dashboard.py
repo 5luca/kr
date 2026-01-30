@@ -26,6 +26,8 @@ def get_data():
         response = requests.get(SHEET_URL)
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text))
+        
+        # Očistíme názvy sloupců (odstraníme mezery)
         df.columns = [str(c).strip() for c in df.columns]
         
         data_rows = []
@@ -36,18 +38,19 @@ def get_data():
             y_sym = f"{symbol}-USD"
             if symbol == 'DOT': y_sym = 'DOT-USD'
             
-            # Načtení dat
+            # 1. Načteme množství
             mnozstvi = clean_number(row.get('Mnozstvi', 0))
-            nakup = clean_number(row.get('Nakup', 0))
+            
+            # 2. Načteme "V čem visím" přímo z Tabulky (sloupec 'Visim')
+            v_tom_visim = clean_number(row.get('Visim', 0))
             
             data_rows.append({
                 'Symbol': symbol,
                 'Yahoo_Sym': y_sym,
                 'Mnozstvi': mnozstvi,
-                'Nakup_Cena': nakup,
-                'V_tom_visim': mnozstvi * nakup, # Tady počítáme "zůstatek vkladu"
-                'Cil_Prodej': clean_number(row.get('Prodej', 0)),
-                'Cil_Nakup': clean_number(row.get('Koupit', 0))
+                'Nakup_Strategie': clean_number(row.get('Nakup', 0)), # Pro info
+                'V_tom_visim': v_tom_visim, 
+                'Cil_Prodej': clean_number(row.get('Prodej', 0))
             })
             
         df_clean = pd.DataFrame(data_rows)
@@ -76,78 +79,85 @@ def get_data():
         # Zisk = Hodnota teď - To v čem visím
         df_clean['Zisk_KC'] = df_clean['Hodnota_Ted'] - df_clean['V_tom_visim']
         
-        df_clean['Zisk_PCT'] = df_clean.apply(
-            lambda x: ((x['Cena_Ted'] - x['Nakup_Cena']) / x['Nakup_Cena'] * 100) if x['Nakup_Cena'] > 0 else 0, 
-            axis=1
-        )
-        
         return df_clean, usd_czk
         
     except Exception as e:
         st.error(f"Chyba při načítání dat: {e}")
         return None, 0
 
-st.title("💰 Krypto Přehled")
+# --- START APLIKACE ---
+st.title("💰 Krypto Dashboard")
 
-if st.button('🔄 Aktualizovat teď'):
+if st.button('🔄 Aktualizovat'):
     st.cache_data.clear()
 
 df, kurz = get_data()
 
 if df is not None and not df.empty:
+    # 1. HLAVNÍ METRIKY
     total_val = df['Hodnota_Ted'].sum()
-    total_invested = df['V_tom_visim'].sum() # Celkem "visím"
-    total_profit = total_val - total_invested
+    total_stuck = df['V_tom_visim'].sum() # Celkem "visím" (suma z Tabulky)
+    total_profit = total_val - total_stuck
     
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Celková hodnota (Mám)", f"{total_val:,.0f} Kč")
-    c2.metric("Zůstatek vkladu (Visím v tom)", f"{total_invested:,.0f} Kč")
-    c3.metric("Čistý zisk", f"{total_profit:,.0f} Kč", 
-              delta=f"{(total_profit/total_invested*100):.1f} %" if total_invested > 0 else None)
+    col_main, col_chart = st.columns([1, 2])
+    
+    with col_main:
+        st.markdown("### 🏦 Celková hodnota portfolia")
+        st.markdown(f"<h1 style='color: #4CAF50; font-size: 48px;'>{total_val:,.0f} Kč</h1>", unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.markdown("### 📊 Historická bilance")
+        
+        st.metric(
+            label="Zůstatek vkladu (Kolik v tom visím)", 
+            value=f"{total_stuck:,.0f} Kč",
+            help="Částka načtená ze sloupce 'Visim' v Google Tabulce."
+        )
+        
+        st.metric(
+            label="Celkový čistý zisk", 
+            value=f"{total_profit:,.0f} Kč",
+            delta=f"{(total_profit/total_stuck*100):.1f} %" if total_stuck > 0 else "∞ %"
+        )
 
+    with col_chart:
+        st.markdown("### 🏆 Kde je největší zisk?")
+        df['Barva'] = df['Zisk_KC'].apply(lambda x: 'Zisk' if x>=0 else 'Ztráta')
+        fig = px.bar(df.sort_values('Zisk_KC', ascending=False), 
+                      x='Symbol', y='Zisk_KC', color='Barva',
+                      text='Zisk_KC',
+                      color_discrete_map={'Zisk': '#28a745', 'Ztráta': '#dc3545'})
+        fig.update_traces(texttemplate='%{text:.0s}', textposition='outside')
+        st.plotly_chart(fig, use_container_width=True)
+
+    # 2. TABULKA
     st.markdown("---")
-    st.subheader("📋 Detailní tabulka")
+    st.subheader("📋 Detailní přehled")
     
-    # Výběr sloupců pro tabulku
     display = df.copy()
-    display = display[['Symbol', 'Mnozstvi', 'Cena_Ted', 'V_tom_visim', 'Hodnota_Ted', 'Zisk_KC', 'Zisk_PCT', 'Cil_Prodej']]
+    display = display[['Symbol', 'Mnozstvi', 'Cena_Ted', 'V_tom_visim', 'Hodnota_Ted', 'Zisk_KC', 'Cil_Prodej']]
+    display.columns = ['Mince', 'Držím', 'Cena (Kč)', 'Visím v tom (Kč)', 'Hodnota (Kč)', 'Zisk (Kč)', 'Cíl Prodej']
     
-    # Barvičky
-    def color_text(val):
+    def color_profit(val):
         color = '#28a745' if val > 0 else '#dc3545'
         return f'color: {color}; font-weight: bold;'
 
     st.dataframe(
         display.style.format({
-            'Mnozstvi': '{:.4f}',
-            'Cena_Ted': '{:,.0f} Kč',
-            'V_tom_visim': '{:,.0f} Kč',    # Tady uvidíš "kolik v tom visíš"
-            'Hodnota_Ted': '{:,.0f} Kč',    # Tady uvidíš "kolik to má cenu teď"
-            'Zisk_KC': '{:+,.0f} Kč',       # Zisk v korunách
-            'Zisk_PCT': '{:+.1f} %',        # Zisk v procentech
-            'Cil_Prodej': '{:,.0f} Kč'
-        }).applymap(color_text, subset=['Zisk_KC', 'Zisk_PCT']),
-        use_container_width=True
+            'Držím': '{:.4f}',
+            'Cena (Kč)': '{:,.0f}',
+            'Visím v tom (Kč)': '{:,.0f}',
+            'Hodnota (Kč)': '{:,.0f}',
+            'Zisk (Kč)': '{:+,.0f}',
+            'Cíl Prodej': '{:,.0f}'
+        }).applymap(color_profit, subset=['Zisk (Kč)']),
+        use_container_width=True,
+        height=500
     )
+    
+    st.caption(f"Aktualizováno přes Yahoo Finance. Kurz USD: {kurz:.2f} Kč")
 
-    c_left, c_right = st.columns(2)
-    with c_left:
-        st.subheader("Rozložení portfolia (Kde jsou peníze)")
-        fig1 = px.pie(df, values='Hodnota_Ted', names='Symbol', hole=0.4)
-        st.plotly_chart(fig1, use_container_width=True)
-        
-    with c_right:
-        st.subheader("Zisk v korunách (Úspěšnost)")
-        # Graf zisku v korunách je často přehlednější než v procentech
-        df['Barva'] = df['Zisk_KC'].apply(lambda x: 'Zisk' if x>=0 else 'Ztráta')
-        fig2 = px.bar(df.sort_values('Zisk_KC', ascending=False), 
-                      x='Symbol', y='Zisk_KC', color='Barva',
-                      title="Kolik mi která mince vydělala (Kč)",
-                      color_discrete_map={'Zisk': '#28a745', 'Ztráta': '#dc3545'})
-        st.plotly_chart(fig2, use_container_width=True)
-        
-    st.caption(f"Data: Yahoo Finance. Kurz USD: {kurz:.2f} Kč")
 else:
-    st.warning("Žádná data. Zkontroluj tabulku.")
+    st.warning("Načítám data... (Ujisti se, že jsi přidala sloupec 'Visim')")
 
 
