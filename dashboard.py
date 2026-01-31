@@ -120,20 +120,19 @@ if df_bot is not None and df_trans is not None:
                 df_bot[col] = pd.to_numeric(df_bot[col], errors='coerce')
 
         # Výběr sloupců pro zobrazení
-        cols_to_show = ['Symbol', 'Investovano', 'Visim (Dashboard)', 'Splaceno %', 'Prodej (CÍL)', 'Koupit (SLEVA)']
+        cols_to_show = ['Symbol', 'Investovano', 'Splaceno %', 'Prodej (CÍL)']
         available_cols = [c for c in cols_to_show if c in df_bot.columns]
         
         # Formátování tabulky - ošetřeno proti textu
         st.dataframe(
             df_bot[available_cols].style.format({
                 'Investovano': '{:,.0f} Kč',
-                'Visim (Dashboard)': '{:,.0f} Kč',
                 'Splaceno %': '{:.1f} %',
                 'Prodej (CÍL)': '{:,.2f} Kč', # Pokud je zde NaN (kvůli textu), vypíše prázdno
-                'Koupit (SLEVA)': '{:,.2f} Kč'
             }, na_rep="-").background_gradient(subset=['Splaceno %'], cmap='RdYlGn'),
             use_container_width=True
         )
 
 else:
     st.info("💡 Čekám na data z Google Sheets. Zkontroluj, zda jsou odkazy správné a listy jsou publikovány jako CSV.")
+
